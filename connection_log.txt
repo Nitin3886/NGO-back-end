@@ -1,0 +1,7 @@
+Starting diagnostic at 2026-04-12T12:22:25.573Z
+URI: mongodb+srv://gouravchalotra4141_db_user:B0oawLlUC7kFV0Ao@cluster0.xhckqqw.mongodb.net/ngo_connect?retryWrites=true&w=majority
+❌ Connection Error: Could not connect to any servers in your MongoDB Atlas cluster. One common reason is that you're trying to access the database from an IP that isn't whitelisted. Make sure your current IP address is on your Atlas cluster's IP whitelist: https://www.mongodb.com/docs/atlas/security-whitelist/
+Stack: MongooseServerSelectionError: Could not connect to any servers in your MongoDB Atlas cluster. One common reason is that you're trying to access the database from an IP that isn't whitelisted. Make sure your current IP address is on your Atlas cluster's IP whitelist: https://www.mongodb.com/docs/atlas/security-whitelist/
+    at _handleConnectionErrors (/Users/gouravchalotra/Desktop/NGO project/NGO backend/node_modules/mongoose/lib/connection.js:1169:11)
+    at NativeConnection.openUri (/Users/gouravchalotra/Desktop/NGO project/NGO backend/node_modules/mongoose/lib/connection.js:1100:11)
+    at async diagnostic (file:///Users/gouravchalotra/Desktop/NGO%20project/NGO%20backend/scratch/diag_db.js:14:5)
