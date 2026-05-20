@@ -10,6 +10,9 @@ import DonorProfile from './models/DonorProfile.js';
 import Blog from './models/Blog.js';
 import Comment from './models/Comment.js';
 import Experience from './models/Experience.js';
+import dns from 'dns';
+// Change DNS
+dns.setServers(["1.1.1.1", "8.8.8.8"]);
 
 dotenv.config();
 
@@ -34,9 +37,30 @@ app.use(cors({
 }));
 app.use(express.json());
 
-// MongoDB Connection
+// MongoDB Connection + Auto-seed Admin
 mongoose.connect(process.env.MONGODB_URI)
-  .then(() => console.log('✅ Connected to MongoDB Cluster!'))
+  .then(async () => {
+    console.log('✅ Connected to MongoDB Cluster!');
+    // Auto-create admin account if none exists
+    try {
+      const existing = await User.findOne({ role: 'ADMIN' });
+      if (!existing) {
+        const passwordHash = await bcrypt.hash('admin123456', 10);
+        await new User({ fullName: 'Admin', email: 'admin@ngoconnect.com', passwordHash, role: 'ADMIN' }).save();
+        console.log('');
+        console.log('🔑 ====================================');
+        console.log('🔑  ADMIN ACCOUNT AUTO-CREATED');
+        console.log('🔑  Email:    admin@ngoconnect.com');
+        console.log('🔑  Password: admin123456');
+        console.log('🔑 ====================================');
+        console.log('');
+      } else {
+        console.log('ℹ️  Admin account already exists:', existing.email);
+      }
+    } catch (e) {
+      console.error('⚠️  Admin seed failed:', e.message);
+    }
+  })
   .catch((err) => {
     console.error('\n' + '='.repeat(60));
     console.error('❌ MONGODB CONNECTION ERROR');
@@ -44,12 +68,6 @@ mongoose.connect(process.env.MONGODB_URI)
     if (err.name === 'MongooseServerSelectionError') {
       console.error('CAUSE: The server cannot reach your MongoDB Atlas cluster.');
       console.error('FIX: You must whitelist your current IP address in Atlas.');
-      console.error('\nYOUR CURRENT IP: 49.156.90.204');
-      console.error('\nSTEPS:');
-      console.error('1. Go to https://cloud.mongodb.com/');
-      console.error('2. Security > Network Access > Add IP Address');
-      console.error('3. Add "49.156.90.204" and click Confirm.');
-      console.error('4. Restart this server (npm start).');
     } else {
       console.error('MESSAGE:', err.message);
     }
@@ -100,9 +118,9 @@ app.post('/api/register', async (req, res) => {
   try {
     // 1. Check DB Connection early
     if (mongoose.connection.readyState !== 1) {
-      return res.status(503).json({ 
-        message: 'Database connection is currently unavailable.', 
-        error: 'The server is unable to reach MongoDB. Please check your IP whitelist in Atlas.' 
+      return res.status(503).json({
+        message: 'Database connection is currently unavailable.',
+        error: 'The server is unable to reach MongoDB. Please check your IP whitelist in Atlas.'
       });
     }
 
@@ -167,11 +185,11 @@ app.get('/api/me', authMiddleware, async (req, res) => {
 app.put('/api/me', authMiddleware, async (req, res) => {
   try {
     const { fullName, email, organizationName, missionStatement, upiId, upiQrImage } = req.body;
-    
+
     // Update User
     const user = await User.findById(req.user.id);
     if (!user) return res.status(404).json({ message: 'User not found.' });
-    
+
     if (fullName) user.fullName = fullName;
     if (email) user.email = email;
     await user.save();
@@ -350,6 +368,147 @@ app.get('/api/ngos', async (req, res) => {
     res.json({ ngos });
   } catch (error) {
     res.status(500).json({ message: 'Error fetching NGOs', error: error.message });
+  }
+});
+
+// ==========================================
+// ADMIN MIDDLEWARE
+// ==========================================
+const adminMiddleware = (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ message: 'No token provided.' });
+  }
+  try {
+    const token = authHeader.split(' ')[1];
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    if (decoded.role !== 'ADMIN') {
+      return res.status(403).json({ message: 'Admin access required.' });
+    }
+    req.user = decoded;
+    next();
+  } catch (error) {
+    return res.status(401).json({ message: 'Invalid or expired token.' });
+  }
+};
+
+// ==========================================
+// ADMIN ROUTES
+// ==========================================
+
+// GET /api/admin/stats — Overview stats for admin dashboard
+app.get('/api/admin/stats', adminMiddleware, async (req, res) => {
+  try {
+    const [totalNGOs, totalDonors, totalPosts, totalComments, totalExperiences] = await Promise.all([
+      NGO.countDocuments(),
+      User.countDocuments({ role: 'DONOR' }),
+      Blog.countDocuments(),
+      Comment.countDocuments(),
+      Experience.countDocuments(),
+    ]);
+
+    // Monthly post counts for the last 12 months
+    const now = new Date();
+    const monthlyPosts = [];
+    for (let i = 11; i >= 0; i--) {
+      const start = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const end = new Date(now.getFullYear(), now.getMonth() - i + 1, 1);
+      const count = await Blog.countDocuments({ publishedAt: { $gte: start, $lt: end } });
+      monthlyPosts.push({
+        month: start.toLocaleString('default', { month: 'short' }),
+        count,
+        year: start.getFullYear(),
+      });
+    }
+
+    // Monthly donor registrations for the last 12 months
+    const monthlyDonors = [];
+    for (let i = 11; i >= 0; i--) {
+      const start = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const end = new Date(now.getFullYear(), now.getMonth() - i + 1, 1);
+      const count = await User.countDocuments({ role: 'DONOR', createdAt: { $gte: start, $lt: end } });
+      monthlyDonors.push({ month: start.toLocaleString('default', { month: 'short' }), count });
+    }
+
+    res.json({ totalNGOs, totalDonors, totalPosts, totalComments, totalExperiences, monthlyPosts, monthlyDonors });
+  } catch (error) {
+    res.status(500).json({ message: 'Error fetching admin stats', error: error.message });
+  }
+});
+
+// GET /api/admin/ngos — All NGOs with post count, comment count
+app.get('/api/admin/ngos', adminMiddleware, async (req, res) => {
+  try {
+    const ngos = await NGO.find()
+      .populate({ path: 'managerId', select: 'fullName email createdAt' })
+      .lean();
+
+    const ngosWithStats = await Promise.all(ngos.map(async (ngo) => {
+      const posts = await Blog.find({ ngoId: ngo._id }).lean();
+      const postCount = posts.length;
+      const totalLikes = posts.reduce((sum, p) => sum + (p.likes?.length || 0), 0);
+      const totalShares = posts.reduce((sum, p) => sum + (p.shares || 0), 0);
+      const totalComments = await Comment.countDocuments({ postId: { $in: posts.map(p => p._id) } });
+      const recentPost = posts.sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt))[0];
+      return { ...ngo, postCount, totalLikes, totalShares, totalComments, recentPost };
+    }));
+
+    res.json({ ngos: ngosWithStats });
+  } catch (error) {
+    res.status(500).json({ message: 'Error fetching admin NGO data', error: error.message });
+  }
+});
+
+// GET /api/admin/posts — All posts for admin
+app.get('/api/admin/posts', adminMiddleware, async (req, res) => {
+  try {
+    const posts = await Blog.find()
+      .sort({ publishedAt: -1 })
+      .limit(20)
+      .populate({ path: 'ngoId', select: 'organizationName isVerified' })
+      .populate({ path: 'authorId', select: 'fullName email' })
+      .lean();
+
+    const postsWithMeta = await Promise.all(posts.map(async (post) => {
+      const commentCount = await Comment.countDocuments({ postId: post._id });
+      return { ...post, commentCount, likeCount: post.likes?.length || 0 };
+    }));
+
+    res.json({ posts: postsWithMeta });
+  } catch (error) {
+    res.status(500).json({ message: 'Error fetching admin posts', error: error.message });
+  }
+});
+
+// PATCH /api/admin/ngos/:id/verify — Toggle NGO verified status
+app.patch('/api/admin/ngos/:id/verify', adminMiddleware, async (req, res) => {
+  try {
+    const ngo = await NGO.findById(req.params.id);
+    if (!ngo) return res.status(404).json({ message: 'NGO not found.' });
+    ngo.isVerified = !ngo.isVerified;
+    await ngo.save();
+    res.json({ message: `NGO ${ngo.isVerified ? 'verified' : 'unverified'} successfully.`, isVerified: ngo.isVerified });
+  } catch (error) {
+    res.status(500).json({ message: 'Error updating NGO', error: error.message });
+  }
+});
+
+// POST /api/admin/register — Create admin account (one-time setup, no auth required)
+// Protected by a secret key in body
+app.post('/api/admin/register', async (req, res) => {
+  try {
+    const { fullName, email, password, adminSecret } = req.body;
+    if (adminSecret !== (process.env.ADMIN_SECRET || 'ngo_admin_secret_2026')) {
+      return res.status(403).json({ message: 'Invalid admin secret.' });
+    }
+    const existing = await User.findOne({ email });
+    if (existing) return res.status(400).json({ message: 'Email already registered.' });
+    const passwordHash = await bcrypt.hash(password, 10);
+    const admin = await new User({ fullName, email, passwordHash, role: 'ADMIN' }).save();
+    const token = jwt.sign({ id: admin._id, email: admin.email, role: admin.role, fullName: admin.fullName }, process.env.JWT_SECRET, { expiresIn: '7d' });
+    res.status(201).json({ message: 'Admin account created.', token, user: { id: admin._id, fullName: admin.fullName, email: admin.email, role: admin.role } });
+  } catch (error) {
+    res.status(500).json({ message: 'Error creating admin', error: error.message });
   }
 });
 
