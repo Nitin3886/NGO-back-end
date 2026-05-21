@@ -360,6 +360,92 @@ app.post('/api/experiences', authMiddleware, async (req, res) => {
 });
 
 // ==========================================
+// RAG / AI QUERY (GEMINI REST API)
+// ==========================================
+app.post('/api/ngo/query', authMiddleware, async (req, res) => {
+  try {
+    if (req.user.role !== 'NGO_MANAGER') {
+      return res.status(403).json({ message: 'Only NGO managers can query data.' });
+    }
+
+    const { query } = req.body;
+    if (!query) {
+      return res.status(400).json({ message: 'Query string is required.' });
+    }
+
+    // 1. Fetch relevant context data from MongoDB
+    const ngo = await NGO.findOne({ managerId: req.user.id });
+    if (!ngo) return res.status(404).json({ message: 'NGO profile not found.' });
+
+    const posts = await Blog.find({ ngoId: ngo._id }).lean();
+    
+    // Create a simplified context string
+    const contextData = {
+      ngoName: ngo.organizationName,
+      totalRaised: ngo.totalRaised || 0,
+      postCount: posts.length,
+      posts: posts.map(p => ({
+        title: p.title,
+        likes: p.likes?.length || 0,
+        publishedAt: p.publishedAt,
+        contentSnippet: p.content.substring(0, 100) + '...'
+      }))
+    };
+
+    const apiKey = process.env.GEMINI_API_KEY;
+
+    // 2. Fallback if no API key is provided
+    if (!apiKey) {
+      // Fetch platform-wide static data as requested by user
+      const totalNGOs = await NGO.countDocuments();
+      const totalDonors = await User.countDocuments({ role: 'DONOR' });
+      const totalUsers = await User.countDocuments();
+      const totalPlatformPosts = await Blog.countDocuments();
+      const totalComments = await Comment.countDocuments();
+
+      return res.json({ 
+        answer: `**[Static Data Fallback]** It looks like the Gemini API is not connected. Here is the static platform data from MongoDB instead:\n\n- **Total NGO Managers/Organizations**: ${totalNGOs}\n- **Total Donors**: ${totalDonors}\n- **Total Platform Members**: ${totalUsers}\n- **Total Posts**: ${totalPlatformPosts}\n- **Total Comments**: ${totalComments}\n\n*(Your specific NGO has ${posts.length} posts and raised $${ngo.totalRaised || 0})*\n\nTo enable the real AI chat for natural language queries, add your \`GEMINI_API_KEY\` to the backend \`.env\` file.` 
+      });
+    }
+
+    // 3. Call Gemini REST API
+    const prompt = `You are a helpful AI assistant for an NGO Manager. Answer the manager's query based ONLY on the following data context. Keep the answer concise and professional.
+    
+Context Data:
+${JSON.stringify(contextData, null, 2)}
+
+Manager's Query: ${query}
+
+Answer:`;
+
+    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+    
+    const response = await fetch(geminiUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{
+          parts: [{ text: prompt }]
+        }]
+      })
+    });
+
+    const data = await response.json();
+    
+    if (!response.ok) {
+      throw new Error(data.error?.message || 'Failed to call Gemini API');
+    }
+
+    const answer = data.candidates[0].content.parts[0].text;
+
+    res.json({ answer });
+  } catch (error) {
+    console.error('RAG Query Error:', error);
+    res.status(500).json({ message: 'Error processing AI query', error: error.message });
+  }
+});
+
+// ==========================================
 // NGO LISTING
 // ==========================================
 app.get('/api/ngos', async (req, res) => {
